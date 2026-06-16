@@ -1,62 +1,48 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from fpdf import FPDF
 from datetime import datetime
-import numpy as np
+import io
 
 # =========================================================
-# GENERADOR PDF ESTADO DE CUENTA - FORMATO PRUEBA.pdf
-# =========================================================
-# Estructura esperada del Excel:
-# FECHA | CONCEPTO | SERIAL | RETIRO | DEPOSITO | SALDO EN PDF
-#
-# También acepta encabezados equivalentes:
-# Fecha: DIA, FECHA, FECHA OPERACION
-# Concepto: CONCEPTO, DESCRIPCION, MOVIMIENTO
-# Serial: SERIAL, REFERENCIA, REF
-# Retiro: RETIRO, RETIROS, CARGO, CARGOS
-# Deposito: DEPOSITO, DEPOSITOS, ABONO, ABONOS
-# Saldo en PDF: SALDO EN PDF, SALDO, SALDO FINAL
+# CONFIGURACIÓN GENERAL - FORMATO PRUEBA.pdf
 # =========================================================
 
-# Carta: 8.5 x 11 pulgadas = 612 x 792 pt
-PAGE_W_PT = 612.00
-PAGE_H_PT = 792.00
+PAGE_W_PT = 612.0
+PAGE_H_PT = 792.0
 
-# Fuente aproximada al PDF de prueba
 FONT_NAME = "Helvetica"
-FONT_SIZE = 8
+FONT_SIZE = 7.0
 
-# =========================================================
-# POSICIONES HORIZONTALES EN PUNTOS
-# =========================================================
-X_DIA_PT = 43.20
-X_CONCEPTO_PT = 61.20
-X_SERIAL_PT = 159.00
+# Coordenadas tomadas del PDF PRUEBA.pdf
+X_DIA_PT = 43.2
+X_CONCEPTO_PT = 61.2
+X_SERIAL_PT = 300.4
 
-X_RETIRO_RIGHT_PT = 402.60
-X_DEPOSITO_RIGHT_PT = 473.20
-X_SALDO_RIGHT_PT = 565.80
+X_RETIRO_RIGHT_PT = 401.4
+X_DEPOSITO_RIGHT_PT = 472.0
+X_SALDO_RIGHT_PT = 564.6
 
-W_DIA_PT = 15.00
-W_CONCEPTO_PT = 170.00
-W_SERIAL_PT = 75.00
-W_MONTO_PT = 70.00
+W_DIA_PT = 18
+W_CONCEPTO_PT = X_SERIAL_PT - X_CONCEPTO_PT - 4
+W_SERIAL_PT = 38
+W_RETIRO_PT = 75
+W_DEPOSITO_PT = 75
+W_SALDO_PT = 85
 
-X_RETIRO_PT = X_RETIRO_RIGHT_PT - W_MONTO_PT
-X_DEPOSITO_PT = X_DEPOSITO_RIGHT_PT - W_MONTO_PT
-X_SALDO_PT = X_SALDO_RIGHT_PT - W_MONTO_PT
+X_RETIRO_PT = X_RETIRO_RIGHT_PT - W_RETIRO_PT
+X_DEPOSITO_PT = X_DEPOSITO_RIGHT_PT - W_DEPOSITO_PT
+X_SALDO_PT = X_SALDO_RIGHT_PT - W_SALDO_PT
 
-# =========================================================
-# POSICIONES VERTICALES EN PUNTOS
-# =========================================================
-Y_START_FIRST_PT = 506.80
-Y_START_NORMAL_PT = 132.40
-Y_END_PT = 721.00
+# Verticales
+Y_START_FIRST_PT = 506.8
+Y_START_NORMAL_PT = 50.0
+Y_END_PT = 730.0
 
-ROW_H_PT = 18.72
-CELL_H_PT = 8.20
-MAX_ROWS_FIRST_PAGE = 12
+LINE_H_PT = 18.72        # separación entre movimientos
+SERIAL_LINE_H_PT = 9.36  # segunda línea del serial
+CELL_H_PT = 8.5
 
 # =========================================================
 # FUNCIONES AUXILIARES
@@ -68,7 +54,7 @@ def clean_cell(val):
     if isinstance(val, float) and np.isnan(val):
         return ""
     txt = str(val).strip()
-    if txt.lower() in ["nan", "none", "null", "nat"]:
+    if txt.lower() in ["nan", "none", "null"]:
         return ""
     txt = txt.replace("\r", " ").replace("\n", " ")
     while "  " in txt:
@@ -76,52 +62,17 @@ def clean_cell(val):
     return txt
 
 
-def normalize_header(txt):
-    txt = clean_cell(txt).upper()
-    repl = {
-        "Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U", "Ü": "U", "Ñ": "N"
-    }
-    for a, b in repl.items():
-        txt = txt.replace(a, b)
-    txt = txt.replace("_", " ").replace("-", " ").replace(".", "")
-    while "  " in txt:
-        txt = txt.replace("  ", " ")
-    return txt.strip()
-
-
-def clean_day_or_date(val):
-    if val is None:
-        return ""
-
-    if isinstance(val, (pd.Timestamp, datetime)):
-        return f"{val.day:02d}"
-
+def clean_day(val):
     txt = clean_cell(val)
     if txt == "":
         return ""
-
-    # Si viene como fecha de Excel serial
     try:
+        if isinstance(val, (pd.Timestamp, datetime)):
+            return f"{val.day:02d}"
         f = float(txt)
-        if f > 1000:
-            dt = pd.to_datetime(f, unit="D", origin="1899-12-30", errors="coerce")
-            if pd.notna(dt):
-                return f"{dt.day:02d}"
         return f"{int(f):02d}"
     except Exception:
-        pass
-
-    # Si viene como texto fecha: dd/mm/aaaa, aaaa-mm-dd, etc.
-    dt = pd.to_datetime(txt, dayfirst=True, errors="coerce")
-    if pd.notna(dt):
-        return f"{dt.day:02d}"
-
-    # Último recurso: toma los primeros 2 dígitos
-    only_digits = "".join(ch for ch in txt if ch.isdigit())
-    if len(only_digits) >= 2:
-        return only_digits[:2]
-
-    return txt.zfill(2)
+        return txt[:2].zfill(2) if txt[:2].isdigit() else txt
 
 
 def clean_serial(val):
@@ -129,8 +80,9 @@ def clean_serial(val):
     if txt == "":
         return ""
     try:
-        if txt.endswith(".0"):
-            return str(int(float(txt)))
+        f = float(txt)
+        if f.is_integer():
+            return str(int(f))
     except Exception:
         pass
     return txt
@@ -141,193 +93,160 @@ def money_cell(val):
         return ""
     if isinstance(val, float) and np.isnan(val):
         return ""
-
-    txt = str(val).strip()
-    if txt.lower() in ["nan", "none", "null", "nat", ""]:
+    if isinstance(val, str) and val.strip().lower() in ["", "nan", "none", "null"]:
         return ""
-
     try:
-        num = (
-            txt.replace("$", "")
-               .replace(",", "")
-               .replace(" ", "")
-               .strip()
-        )
-        fval = float(num)
-        if np.isnan(fval) or abs(fval) < 0.005:
+        if isinstance(val, str):
+            val = val.replace("$", "").replace(",", "").replace(" ", "").strip()
+        num = float(val)
+        if np.isnan(num) or abs(num) < 0.000001:
             return ""
-        if fval < 0:
-            return f"$ ({abs(fval):,.2f})"
-        return f"$ {fval:,.2f}"
+        return f"$ {num:,.2f}"
     except Exception:
         return clean_cell(val)
 
 
 def read_excel_file(uploaded_file):
-    filename = uploaded_file.name.lower()
+    data = uploaded_file.read()
 
-    if not (filename.endswith(".xlsx") or filename.endswith(".xlsm") or filename.endswith(".xls")):
-        raise ValueError("Formato no compatible. Usa .xlsx, .xlsm o .xls.")
-
+    # 1) Intenta como xlsx/xlsm aunque la extensión sea .xls
     try:
-        uploaded_file.seek(0)
-        return pd.read_excel(uploaded_file, engine="openpyxl", header=None, dtype=object)
+        return pd.read_excel(io.BytesIO(data), engine="openpyxl", header=None)
     except Exception as err_openpyxl:
+        # 2) Intenta xls real
         try:
-            uploaded_file.seek(0)
-            return pd.read_excel(uploaded_file, engine="xlrd", header=None, dtype=object)
+            return pd.read_excel(io.BytesIO(data), engine="xlrd", header=None)
         except Exception as err_xlrd:
             raise ValueError(
-                "No fue posible leer el Excel. Puede estar dañado, protegido o no ser un Excel válido.\n\n"
-                f"Archivo: {filename}\n\n"
-                f"Error OpenPyXL: {err_openpyxl}\n\n"
-                f"Error XLRD: {err_xlrd}"
+                "No fue posible leer el Excel. "
+                f"Error openpyxl: {err_openpyxl}. "
+                f"Error xlrd: {err_xlrd}."
             )
-
-
-def find_header_row(df):
-    required_sets = [
-        ["FECHA", "CONCEPTO", "SERIAL", "RETIRO", "DEPOSITO", "SALDO EN PDF"],
-        ["FECHA", "CONCEPTO", "SERIAL", "RETIRO", "DEPOSITO", "SALDO"],
-        ["DIA", "CONCEPTO", "REFERENCIA", "CARGO", "ABONO", "SALDO"],
-    ]
-
-    max_rows = min(len(df), 25)
-    for idx in range(max_rows):
-        row = [normalize_header(x) for x in df.iloc[idx].tolist()]
-        row_set = set(row)
-        for required in required_sets:
-            hits = sum(1 for req in required if req in row_set)
-            if hits >= 4:
-                return idx
-    return None
-
-
-def first_existing_column(data, names):
-    for name in names:
-        if name in data.columns:
-            return data[name]
-    return ""
 
 
 def parse_excel(df_raw):
     if df_raw.shape[1] < 6:
         raise ValueError(
-            "El Excel debe tener al menos 6 columnas: FECHA, CONCEPTO, SERIAL, RETIRO, DEPOSITO y SALDO EN PDF."
+            "El Excel debe tener 6 columnas: Fecha, Concepto, SERIAL, Retiro, Deposito y Saldo en PDF."
         )
 
-    header_row = find_header_row(df_raw)
+    df = df_raw.iloc[:, :6].copy()
+    df.columns = ["FECHA", "CONCEPTO", "SERIAL", "RETIRO", "DEPOSITO", "SALDO"]
 
-    if header_row is not None:
-        headers = [normalize_header(x) for x in df_raw.iloc[header_row].tolist()]
-        data = df_raw.iloc[header_row + 1:].copy()
-        data.columns = headers
+    # Quita fila de encabezados si existe
+    primera = " ".join([clean_cell(x).upper() for x in df.iloc[0].tolist()]) if len(df) else ""
+    if "FECHA" in primera and "CONCEPTO" in primera:
+        df = df.iloc[1:].copy()
 
-        final = pd.DataFrame()
-        final["FECHA"] = first_existing_column(data, ["FECHA", "DIA", "FECHA OPERACION", "FECHA DE OPERACION"])
-        final["CONCEPTO"] = first_existing_column(data, ["CONCEPTO", "DESCRIPCION", "MOVIMIENTO", "DETALLE"])
-        final["SERIAL"] = first_existing_column(data, ["SERIAL", "REFERENCIA", "REF", "NUMERO", "NO", "DOCUMENTO"])
-        final["RETIRO"] = first_existing_column(data, ["RETIRO", "RETIROS", "CARGO", "CARGOS", "EGRESO", "EGRESOS", "DEBE"])
-        final["DEPOSITO"] = first_existing_column(data, ["DEPOSITO", "DEPOSITOS", "ABONO", "ABONOS", "INGRESO", "INGRESOS", "HABER"])
-        final["SALDO EN PDF"] = first_existing_column(data, ["SALDO EN PDF", "SALDO", "SALDO FINAL", "BALANCE"])
+    df = df.replace([np.nan, "nan", "NaN", "None", "NULL", "null"], "")
 
-    else:
-        final = df_raw.iloc[:, :6].copy()
-        final.columns = ["FECHA", "CONCEPTO", "SERIAL", "RETIRO", "DEPOSITO", "SALDO EN PDF"]
+    movimientos = []
+    for _, row in df.iterrows():
+        fecha = clean_cell(row["FECHA"])
+        concepto = clean_cell(row["CONCEPTO"])
+        serial = clean_serial(row["SERIAL"])
+        retiro = row["RETIRO"]
+        deposito = row["DEPOSITO"]
+        saldo = row["SALDO"]
 
-    final = final.fillna("")
+        # Si es la segunda línea del serial, se pega al movimiento anterior.
+        if fecha == "" and concepto == "" and serial != "":
+            if movimientos:
+                movimientos[-1]["SERIAL_2"] = serial
+            continue
 
-    for col in final.columns:
-        final[col] = final[col].map(clean_cell)
+        # Ignora filas totalmente vacías
+        if fecha == "" and concepto == "" and serial == "" and clean_cell(retiro) == "" and clean_cell(deposito) == "" and clean_cell(saldo) == "":
+            continue
 
-    # Elimina encabezado duplicado si fue tomado como primera fila sin detectar encabezados
-    final = final[~(
-        final["FECHA"].map(normalize_header).eq("FECHA") &
-        final["CONCEPTO"].map(normalize_header).eq("CONCEPTO")
-    )]
+        movimientos.append({
+            "DIA": row["FECHA"],
+            "CONCEPTO": concepto,
+            "SERIAL_1": serial,
+            "SERIAL_2": "",
+            "RETIRO": retiro,
+            "DEPOSITO": deposito,
+            "SALDO": saldo,
+        })
 
-    final = final[~(
-        (final["FECHA"] == "") &
-        (final["CONCEPTO"] == "") &
-        (final["SERIAL"] == "") &
-        (final["RETIRO"] == "") &
-        (final["DEPOSITO"] == "") &
-        (final["SALDO EN PDF"] == "")
-    )].copy()
+    if not movimientos:
+        raise ValueError("No se encontraron movimientos útiles en el Excel.")
 
-    return final.reset_index(drop=True)
+    return pd.DataFrame(movimientos)
 
 
 def get_pdf_bytes(pdf):
-    pdf_output = pdf.output(dest="S")
-    if isinstance(pdf_output, str):
-        return pdf_output.encode("latin1")
-    return bytes(pdf_output)
+    out = pdf.output(dest="S")
+    if isinstance(out, str):
+        return out.encode("latin1")
+    return bytes(out)
 
 # =========================================================
 # CLASE PDF
 # =========================================================
 
 class EstadoCuentaPDF(FPDF):
-
     def __init__(self):
         super().__init__(unit="pt", format=(PAGE_W_PT, PAGE_H_PT))
         self.set_auto_page_break(False)
-        self.alias_nb_pages()
         self.current_y = Y_START_FIRST_PT
-        self.rows_on_current_page = 0
 
     def header(self):
         self.set_font(FONT_NAME, "", FONT_SIZE)
-        self.set_text_color(0, 0, 0)
-        if self.page_no() == 1:
-            self.current_y = Y_START_FIRST_PT
-        else:
-            self.current_y = Y_START_NORMAL_PT
-        self.rows_on_current_page = 0
+        self.current_y = Y_START_FIRST_PT if self.page_no() == 1 else Y_START_NORMAL_PT
 
     def footer(self):
         pass
 
     def check_page_break(self):
-        if self.page_no() == 1 and self.rows_on_current_page >= MAX_ROWS_FIRST_PAGE:
+        if self.current_y + LINE_H_PT > Y_END_PT:
             self.add_page()
             self.current_y = Y_START_NORMAL_PT
-            self.rows_on_current_page = 0
-            return
 
-        if self.current_y + ROW_H_PT > Y_END_PT:
-            self.add_page()
-            self.current_y = Y_START_NORMAL_PT
-            self.rows_on_current_page = 0
-
-    def text_cell(self, x, y, w, txt, align="L"):
-        self.set_xy(x, y)
-        self.cell(w, CELL_H_PT, txt, border=0, ln=0, align=align)
-
-    def add_movement_row(self, fecha, concepto, serial, retiro, deposito, saldo):
+    def add_movement_row(self, dia, concepto, serial1, serial2, retiro, deposito, saldo):
         self.check_page_break()
-
         y = self.current_y
+
         self.set_font(FONT_NAME, "", FONT_SIZE)
         self.set_text_color(0, 0, 0)
 
-        dia_str = clean_day_or_date(fecha)
+        dia_str = clean_day(dia)
         concepto_str = clean_cell(concepto)
-        serial_str = clean_serial(serial)
+        serial1_str = clean_serial(serial1)
+        serial2_str = clean_serial(serial2)
         retiro_str = money_cell(retiro)
         deposito_str = money_cell(deposito)
         saldo_str = money_cell(saldo)
 
-        self.text_cell(X_DIA_PT, y, W_DIA_PT, dia_str, "L")
-        self.text_cell(X_CONCEPTO_PT, y, W_CONCEPTO_PT, concepto_str, "L")
-        self.text_cell(X_SERIAL_PT, y, W_SERIAL_PT, serial_str, "L")
-        self.text_cell(X_RETIRO_PT, y, W_MONTO_PT, retiro_str, "R")
-        self.text_cell(X_DEPOSITO_PT, y, W_MONTO_PT, deposito_str, "R")
-        self.text_cell(X_SALDO_PT, y, W_MONTO_PT, saldo_str, "R")
+        # DÍA
+        self.set_xy(X_DIA_PT, y)
+        self.cell(W_DIA_PT, CELL_H_PT, dia_str, border=0, align="L")
 
-        self.current_y += ROW_H_PT
-        self.rows_on_current_page += 1
+        # CONCEPTO
+        self.set_xy(X_CONCEPTO_PT, y)
+        self.cell(W_CONCEPTO_PT, CELL_H_PT, concepto_str, border=0, align="L")
+
+        # SERIAL en dos líneas dentro del mismo movimiento
+        self.set_xy(X_SERIAL_PT, y)
+        self.cell(W_SERIAL_PT, CELL_H_PT, serial1_str, border=0, align="L")
+
+        if serial2_str:
+            self.set_xy(X_SERIAL_PT + 13.0, y + SERIAL_LINE_H_PT)
+            self.cell(W_SERIAL_PT, CELL_H_PT, serial2_str, border=0, align="L")
+
+        # RETIRO
+        self.set_xy(X_RETIRO_PT, y)
+        self.cell(W_RETIRO_PT, CELL_H_PT, retiro_str, border=0, align="R")
+
+        # DEPÓSITO
+        self.set_xy(X_DEPOSITO_PT, y)
+        self.cell(W_DEPOSITO_PT, CELL_H_PT, deposito_str, border=0, align="R")
+
+        # SALDO
+        self.set_xy(X_SALDO_PT, y)
+        self.cell(W_SALDO_PT, CELL_H_PT, saldo_str, border=0, align="R")
+
+        self.current_y += LINE_H_PT
 
 # =========================================================
 # STREAMLIT
@@ -339,14 +258,14 @@ st.set_page_config(
     page_icon="📄"
 )
 
-st.title("📄 Generador PDF Estado de Cuenta")
+st.title("📄 Generador de Estado de Cuenta")
 
 st.markdown("""
-Carga un Excel con esta estructura de **6 columnas**:
+Carga un Excel con 6 columnas en este orden:
 
 **Fecha | Concepto | SERIAL | Retiro | Deposito | Saldo en PDF**
 
-Acepta archivos **.xlsx, .xlsm y .xls**.
+La segunda línea del **SERIAL** puede venir en la fila siguiente con Fecha y Concepto vacíos; el sistema la acomodará dentro del mismo movimiento.
 """)
 
 excel_file = st.file_uploader(
@@ -359,41 +278,36 @@ if excel_file:
         df_raw = read_excel_file(excel_file)
         df = parse_excel(df_raw)
 
-        st.success(f"Archivo cargado correctamente: {len(df)} filas útiles.")
+        st.success(f"Archivo cargado correctamente: {len(df)} movimientos útiles.")
         st.dataframe(df.head(30), use_container_width=True)
 
         if st.button("Generar PDF", type="primary", use_container_width=True):
-            try:
-                pdf = EstadoCuentaPDF()
-                pdf.add_page()
+            pdf = EstadoCuentaPDF()
+            pdf.add_page()
 
-                for _, row in df.iterrows():
-                    pdf.add_movement_row(
-                        row["FECHA"],
-                        row["CONCEPTO"],
-                        row["SERIAL"],
-                        row["RETIRO"],
-                        row["DEPOSITO"],
-                        row["SALDO EN PDF"]
-                    )
-
-                pdf_bytes = get_pdf_bytes(pdf)
-
-                st.success("PDF generado correctamente.")
-
-                st.download_button(
-                    label="📥 Descargar PDF",
-                    data=pdf_bytes,
-                    file_name=f"Estado_Cuenta_{datetime.now():%Y%m%d_%H%M%S}.pdf",
-                    mime="application/pdf",
-                    use_container_width=True
+            for _, row in df.iterrows():
+                pdf.add_movement_row(
+                    row["DIA"],
+                    row["CONCEPTO"],
+                    row["SERIAL_1"],
+                    row["SERIAL_2"],
+                    row["RETIRO"],
+                    row["DEPOSITO"],
+                    row["SALDO"],
                 )
 
-            except Exception as e:
-                st.error(f"Error al generar el PDF: {e}")
+            pdf_bytes = get_pdf_bytes(pdf)
+
+            st.success("PDF generado correctamente.")
+            st.download_button(
+                label="📥 Descargar PDF",
+                data=pdf_bytes,
+                file_name=f"Estado_Cuenta_{datetime.now():%Y%m%d_%H%M%S}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
 
     except Exception as e:
         st.error(f"Error al leer el Excel: {e}")
-
 else:
     st.info("Sube un Excel para comenzar.")
