@@ -169,13 +169,38 @@ def money_cell(val):
 def read_excel_file(uploaded_file):
     filename = uploaded_file.name.lower()
 
-    if filename.endswith(".xls"):
-        return pd.read_excel(uploaded_file, engine="xlrd", header=None, dtype=object)
+    if not (filename.endswith(".xlsx") or filename.endswith(".xlsm") or filename.endswith(".xls")):
+        raise ValueError("Formato de archivo no compatible. Usa .xlsx, .xlsm o .xls.")
 
-    if filename.endswith(".xlsx") or filename.endswith(".xlsm"):
-        return pd.read_excel(uploaded_file, engine="openpyxl", header=None, dtype=object)
-
-    raise ValueError("Formato de archivo no compatible. Usa .xls, .xlsx o .xlsm.")
+    # Lectura robusta:
+    # 1) Primero intenta openpyxl, porque muchos archivos vienen con extensión .xls
+    #    pero realmente son archivos modernos .xlsx/.xlsm.
+    # 2) Si falla, reinicia el archivo y prueba xlrd para .xls reales.
+    try:
+        uploaded_file.seek(0)
+        return pd.read_excel(
+            uploaded_file,
+            engine="openpyxl",
+            header=None,
+            dtype=object
+        )
+    except Exception as err_openpyxl:
+        try:
+            uploaded_file.seek(0)
+            return pd.read_excel(
+                uploaded_file,
+                engine="xlrd",
+                header=None,
+                dtype=object
+            )
+        except Exception as err_xlrd:
+            raise ValueError(
+                "No fue posible leer el archivo Excel. "
+                "Puede estar dañado, protegido, o no ser un Excel válido.\n\n"
+                f"Archivo: {filename}\n\n"
+                f"Error OpenPyXL: {err_openpyxl}\n\n"
+                f"Error XLRD: {err_xlrd}"
+            )
 
 
 def normalize_header(txt):
