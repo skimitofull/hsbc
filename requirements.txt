@@ -1,6 +1,6 @@
 streamlit
 pandas
 numpy
-fpdf2
 openpyxl
 xlrd
+fpdf2
